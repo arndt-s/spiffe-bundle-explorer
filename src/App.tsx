@@ -5,7 +5,7 @@ import './App.css';
 
 function App() {
   return (
-    <HashRouter basename={import.meta.env.BASE_URL}>
+    <HashRouter>
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/bundle" element={<BundleViewPage />} />
