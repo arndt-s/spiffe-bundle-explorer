@@ -1,22 +1,61 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, ArrowLeft, Key } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Globe, Key } from 'lucide-react';
 import { Header } from '../components/Header';
 import { BundleHeader } from '../components/bundle/BundleHeader';
+import { TrustDomainSelector } from '../components/bundle/TrustDomainSelector';
 import { JWKKeyCard } from '../components/svid/JWKKeyCard';
 import { CertificateTimeline } from '../components/svid/CertificateTimeline';
 import { CertificateCard } from '../components/svid/CertificateCard';
-import { fetchBundle, parseBundle, CORSError, detectInputType } from '../utils/bundleParser';
+import {
+  fetchBundle,
+  parseBundle,
+  parseBundleMap,
+  isBundleMap,
+  CORSError,
+  detectInputType,
+} from '../utils/bundleParser';
 import { base64urlDecode } from '../utils/base64url';
 import type {
   SPIFFEBundle,
-  ParsedJWK,
-  ParsedX509SVID,
+  SPIFFEBundleMap,
+  ParsedBundleEntry,
   ParsedCertificate,
 } from '../types';
 import { parseSpiffeId } from '../utils/spiffeid';
 
 type TabType = 'jwt' | 'x509' | 'wit';
+
+function buildSingleBundleEntry(bundle: SPIFFEBundle): ParsedBundleEntry {
+  const parsed = parseBundle(bundle);
+  const trustDomain =
+    parsed.x509Keys
+      .flatMap((key) => key.certificates)
+      .map((cert) => {
+        try {
+          return parseSpiffeId(cert.spiffeId).getTrustDomain();
+        } catch {
+          return '';
+        }
+      })
+      .find((td) => td !== '') ?? '';
+
+  return {
+    trustDomain,
+    bundle,
+    jwtKeys: parsed.jwtKeys,
+    x509Keys: parsed.x509Keys,
+    witKeys: parsed.witKeys,
+  };
+}
+
+function pickInitialTab(entry: ParsedBundleEntry | undefined): TabType {
+  if (!entry) return 'x509';
+  if (entry.x509Keys.length > 0) return 'x509';
+  if (entry.jwtKeys.length > 0) return 'jwt';
+  if (entry.witKeys.length > 0) return 'wit';
+  return 'x509';
+}
 
 export function BundleViewPage() {
   const navigate = useNavigate();
@@ -24,33 +63,40 @@ export function BundleViewPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isCorsError, setIsCorsError] = useState(false);
-  const [bundle, setBundle] = useState<SPIFFEBundle | null>(null);
 
-  const [jwtKeys, setJwtKeys] = useState<ParsedJWK[]>([]);
-  const [x509Keys, setX509Keys] = useState<ParsedX509SVID[]>([]);
-  const [witKeys, setWitKeys] = useState<ParsedJWK[]>([]);
+  const [entries, setEntries] = useState<ParsedBundleEntry[]>([]);
+  const [isMap, setIsMap] = useState(false);
+  const [selectedTrustDomain, setSelectedTrustDomain] = useState<string>('');
 
   const [activeTab, setActiveTab] = useState<TabType>('x509');
   const [showProxyPrompt, setShowProxyPrompt] = useState(false);
   const [originalInput, setOriginalInput] = useState<string>('');
 
-  const [trustDomain, setTrustDomain] = useState<string>('');
-  useEffect(() => {
-    x509Keys.flatMap((key) => {
-      return key.certificates.map((cert) => {
-        try {
-          return parseSpiffeId(cert.spiffeId).getTrustDomain();
-        } catch (error) {
-          return ""
-        }
-      })
-    }).filter((spiffeID) => {
-      return spiffeID !== "";
-    }).find((td) => {
-      setTrustDomain(td);
-      return true;
-    })
-  }, [x509Keys])
+  const currentEntry = useMemo(() => {
+    if (entries.length === 0) return undefined;
+    return (
+      entries.find((e) => e.trustDomain === selectedTrustDomain) ?? entries[0]
+    );
+  }, [entries, selectedTrustDomain]);
+
+  const ingestPayload = (payload: SPIFFEBundle | SPIFFEBundleMap) => {
+    let nextEntries: ParsedBundleEntry[];
+    let nextIsMap: boolean;
+
+    if (isBundleMap(payload)) {
+      nextEntries = parseBundleMap(payload);
+      nextIsMap = true;
+    } else {
+      nextEntries = [buildSingleBundleEntry(payload)];
+      nextIsMap = false;
+    }
+
+    setEntries(nextEntries);
+    setIsMap(nextIsMap);
+    const firstTrustDomain = nextEntries[0]?.trustDomain ?? '';
+    setSelectedTrustDomain(firstTrustDomain);
+    setActiveTab(pickInitialTab(nextEntries[0]));
+  };
 
   useEffect(() => {
     const urlParam = searchParams.get('url');
@@ -79,40 +125,25 @@ export function BundleViewPage() {
 
         setOriginalInput(input);
 
-        let fetchedBundle: SPIFFEBundle;
+        let payload: SPIFFEBundle | SPIFFEBundleMap;
         const inputType = detectInputType(input);
 
         if (inputType === 'json') {
-          fetchedBundle = JSON.parse(input.trim()) as SPIFFEBundle;
+          payload = JSON.parse(input.trim()) as SPIFFEBundle | SPIFFEBundleMap;
         } else if (inputType === 'url') {
-          fetchedBundle = await fetchBundle(input, false);
+          payload = await fetchBundle(input, false);
         } else {
           throw new Error('Invalid input: must be either a valid HTTPS URL or bundle JSON');
         }
 
-        const parsed = parseBundle(fetchedBundle);
-
-        setBundle(fetchedBundle);
-        setJwtKeys(parsed.jwtKeys);
-        setX509Keys(parsed.x509Keys);
-        setWitKeys(parsed.witKeys);
-
-        // Switch to the first tab with keys
-        if (parsed.x509Keys.length > 0) {
-          setActiveTab('x509');
-        } else if (parsed.jwtKeys.length > 0) {
-          setActiveTab('jwt');
-        } else if (parsed.witKeys.length > 0) {
-          setActiveTab('wit');
-        }
+        ingestPayload(payload);
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
         setError(errorMessage);
         setIsCorsError(err instanceof CORSError);
-        setBundle(null);
-        setJwtKeys([]);
-        setX509Keys([]);
-        setWitKeys([]);
+        setEntries([]);
+        setIsMap(false);
+        setSelectedTrustDomain('');
       } finally {
         setIsLoading(false);
       }
@@ -128,21 +159,8 @@ export function BundleViewPage() {
     setIsCorsError(false);
 
     try {
-      const fetchedBundle = await fetchBundle(originalInput, true);
-      const parsed = parseBundle(fetchedBundle);
-
-      setBundle(fetchedBundle);
-      setJwtKeys(parsed.jwtKeys);
-      setX509Keys(parsed.x509Keys);
-      setWitKeys(parsed.witKeys);
-
-      if (parsed.jwtKeys.length > 0) {
-        setActiveTab('jwt');
-      } else if (parsed.x509Keys.length > 0) {
-        setActiveTab('x509');
-      } else if (parsed.witKeys.length > 0) {
-        setActiveTab('wit');
-      }
+      const payload = await fetchBundle(originalInput, true);
+      ingestPayload(payload);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
       setError(errorMessage);
@@ -152,6 +170,12 @@ export function BundleViewPage() {
     }
   };
 
+  const handleTrustDomainSelect = (trustDomain: string) => {
+    setSelectedTrustDomain(trustDomain);
+    const next = entries.find((e) => e.trustDomain === trustDomain);
+    setActiveTab(pickInitialTab(next));
+  };
+
   const handleCertificateClick = (cert: ParsedCertificate) => {
     const element = document.getElementById(`cert-${cert.serialNumber}`);
     if (element) {
@@ -159,12 +183,13 @@ export function BundleViewPage() {
     }
   };
 
-  const allCertificates = x509Keys.flatMap((key) => key.certificates);
+  const allCertificates = currentEntry?.x509Keys.flatMap((key) => key.certificates) ?? [];
+  const headerTrustDomain = currentEntry?.trustDomain ?? '';
 
   return (
     <div className="min-h-screen flex flex-col">
-      <Header 
-        title={`SPIFFE Bundle Explorer${trustDomain ? `: ${trustDomain}` : ''}`}
+      <Header
+        title={`SPIFFE Bundle Explorer${headerTrustDomain ? `: ${headerTrustDomain}` : ''}`}
         trailingComponents={
           <button
             className="bg-gray-100 text-black border border-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition-all hover:bg-gray-200 hover:border-gray-300 whitespace-nowrap flex items-center gap-2"
@@ -226,14 +251,31 @@ export function BundleViewPage() {
           </>
         )}
 
-        {bundle && !isLoading && (
+        {!isLoading && !error && isMap && entries.length === 0 && (
+          <div className="text-center py-12 bg-white rounded-lg shadow-sm border border-gray-200">
+            <Globe className="w-16 h-16 mx-auto mb-4 text-gray-400" />
+            <div className="text-gray-600">
+              This SPIFFE Bundle Map contains no trust domains.
+            </div>
+          </div>
+        )}
+
+        {currentEntry && !isLoading && (
           <>
+            {entries.length > 1 && (
+              <TrustDomainSelector
+                entries={entries}
+                selected={currentEntry.trustDomain}
+                onSelect={handleTrustDomainSelect}
+              />
+            )}
+
             <BundleHeader
-              trustDomain={trustDomain}
-              bundle={bundle}
-              jwtKeys={jwtKeys}
-              x509Keys={x509Keys}
-              witKeys={witKeys}
+              trustDomain={currentEntry.trustDomain}
+              bundle={currentEntry.bundle}
+              jwtKeys={currentEntry.jwtKeys}
+              x509Keys={currentEntry.x509Keys}
+              witKeys={currentEntry.witKeys}
             />
 
             <div className="mb-8">
@@ -252,7 +294,7 @@ export function BundleViewPage() {
                       ? 'bg-primary-100 text-primary-700'
                       : 'bg-gray-200 text-gray-700'
                   }`}>
-                    {x509Keys.length}
+                    {currentEntry.x509Keys.length}
                   </span>
                 </button>
                 <button
@@ -269,7 +311,7 @@ export function BundleViewPage() {
                       ? 'bg-primary-100 text-primary-700'
                       : 'bg-gray-200 text-gray-700'
                   }`}>
-                    {jwtKeys.length}
+                    {currentEntry.jwtKeys.length}
                   </span>
                 </button>
                 <button
@@ -286,7 +328,7 @@ export function BundleViewPage() {
                       ? 'bg-primary-100 text-primary-700'
                       : 'bg-gray-200 text-gray-700'
                   }`}>
-                    {witKeys.length}
+                    {currentEntry.witKeys.length}
                   </span>
                 </button>
               </div>
@@ -294,7 +336,7 @@ export function BundleViewPage() {
               <div>
                 {activeTab === 'jwt' && (
                   <div>
-                    {jwtKeys.length === 0 ? (
+                    {currentEntry.jwtKeys.length === 0 ? (
                       <div className="text-center py-12 bg-white rounded-lg">
                         <Key className="w-16 h-16 mx-auto mb-4 text-gray-400" />
                         <div className="text-gray-600">
@@ -303,7 +345,7 @@ export function BundleViewPage() {
                       </div>
                     ) : (
                       <div className="space-y-4">
-                        {jwtKeys.map((key) => (
+                        {currentEntry.jwtKeys.map((key) => (
                           <JWKKeyCard key={key.id} jwk={key} />
                         ))}
                       </div>
@@ -313,7 +355,7 @@ export function BundleViewPage() {
 
                 {activeTab === 'x509' && (
                   <div>
-                    {x509Keys.length === 0 ? (
+                    {currentEntry.x509Keys.length === 0 ? (
                       <div className="text-center py-12 bg-white rounded-lg">
                         <Key className="w-16 h-16 mx-auto mb-4 text-gray-400" />
                         <div className="text-gray-600">
@@ -343,7 +385,7 @@ export function BundleViewPage() {
 
                 {activeTab === 'wit' && (
                   <div>
-                    {witKeys.length === 0 ? (
+                    {currentEntry.witKeys.length === 0 ? (
                       <div className="text-center py-12 bg-white rounded-lg">
                         <Key className="w-16 h-16 mx-auto mb-4 text-gray-400" />
                         <div className="text-gray-600">
@@ -352,7 +394,7 @@ export function BundleViewPage() {
                       </div>
                     ) : (
                       <div className="space-y-4">
-                        {witKeys.map((key) => (
+                        {currentEntry.witKeys.map((key) => (
                           <JWKKeyCard key={key.id} jwk={key} />
                         ))}
                       </div>

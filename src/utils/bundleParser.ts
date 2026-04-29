@@ -1,7 +1,9 @@
 import type {
   SPIFFEBundle,
+  SPIFFEBundleMap,
   ParsedJWK,
   ParsedX509SVID,
+  ParsedBundleEntry,
 } from '../types';
 import { parseCertificateFromX5C } from './certificateParser';
 
@@ -15,7 +17,7 @@ export class CORSError extends Error {
 export async function fetchBundle(
   url: string,
   useProxy: boolean = false
-): Promise<SPIFFEBundle> {
+): Promise<SPIFFEBundle | SPIFFEBundleMap> {
   if (!url.startsWith('https://') && !url.startsWith('http://localhost')) {
     throw new Error('Bundle URL must use HTTPS protocol');
   }
@@ -36,11 +38,13 @@ export async function fetchBundle(
 
     const data = await response.json();
 
-    if (!data.keys || !Array.isArray(data.keys)) {
-      throw new Error('Invalid bundle structure: missing "keys" array');
+    if (isBundleMap(data)) {
+      return data;
     }
-
-    return data as SPIFFEBundle;
+    if (data && Array.isArray((data as SPIFFEBundle).keys)) {
+      return data as SPIFFEBundle;
+    }
+    throw new Error('Invalid bundle structure: expected a JWK Set with "keys" or a SPIFFE Bundle Map with "trust_domains"');
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
       throw new CORSError(
@@ -99,6 +103,43 @@ export function parseBundle(bundle: SPIFFEBundle): {
   return { jwtKeys, x509Keys, witKeys };
 }
 
+export function isBundleMap(value: unknown): value is SPIFFEBundleMap {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as { keys?: unknown; trust_domains?: unknown };
+  if (Array.isArray(candidate.keys)) {
+    return false;
+  }
+  return (
+    candidate.trust_domains !== null &&
+    typeof candidate.trust_domains === 'object' &&
+    !Array.isArray(candidate.trust_domains)
+  );
+}
+
+export function parseBundleMap(map: SPIFFEBundleMap): ParsedBundleEntry[] {
+  const entries: ParsedBundleEntry[] = [];
+
+  for (const [trustDomain, bundle] of Object.entries(map.trust_domains)) {
+    if (!bundle || !Array.isArray(bundle.keys)) {
+      throw new Error(
+        `Invalid bundle for trust domain "${trustDomain}": missing "keys" array`
+      );
+    }
+    const parsed = parseBundle(bundle);
+    entries.push({
+      trustDomain,
+      bundle,
+      jwtKeys: parsed.jwtKeys,
+      x509Keys: parsed.x509Keys,
+      witKeys: parsed.witKeys,
+    });
+  }
+
+  return entries;
+}
+
 export function detectInputType(input: string): 'url' | 'json' | 'invalid' {
   const trimmed = input.trim();
 
@@ -136,8 +177,22 @@ export function validateInput(input: string): { isValid: boolean; error?: string
     // Validate JSON structure
     try {
       const parsed = JSON.parse(input.trim());
-      if (!parsed.keys || !Array.isArray(parsed.keys)) {
-        return { isValid: false, error: 'Invalid bundle structure: missing "keys" array' };
+      if (isBundleMap(parsed)) {
+        for (const [trustDomain, bundle] of Object.entries(parsed.trust_domains)) {
+          if (!bundle || !Array.isArray((bundle as SPIFFEBundle).keys)) {
+            return {
+              isValid: false,
+              error: `Invalid bundle for trust domain "${trustDomain}": missing "keys" array`,
+            };
+          }
+        }
+        return { isValid: true, type: 'json' };
+      }
+      if (!parsed || !Array.isArray(parsed.keys)) {
+        return {
+          isValid: false,
+          error: 'Invalid bundle structure: expected a JWK Set with "keys" or a SPIFFE Bundle Map with "trust_domains"',
+        };
       }
       return { isValid: true, type: 'json' };
     } catch (err) {

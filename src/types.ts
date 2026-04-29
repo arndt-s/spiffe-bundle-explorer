@@ -30,6 +30,10 @@ export interface SPIFFEBundle {
   keys: JWK[];
 }
 
+export interface SPIFFEBundleMap {
+  trust_domains: Record<string, SPIFFEBundle>;
+}
+
 // Parsed Key Types
 
 export interface ParsedJWK extends JWK {
@@ -40,6 +44,14 @@ export interface ParsedX509SVID {
   id: string; // Unique identifier for UI
   jwk: JWK; // Original JWK
   certificates: ParsedCertificate[];
+}
+
+export interface ParsedBundleEntry {
+  trustDomain: string;
+  bundle: SPIFFEBundle;
+  jwtKeys: ParsedJWK[];
+  x509Keys: ParsedX509SVID[];
+  witKeys: ParsedJWK[];
 }
 
 export interface ParsedCertificate {
@@ -69,13 +81,9 @@ export interface ParsedCertificate {
   subjectKeyIdentifier: string | null;
   authorityKeyIdentifier: string | null;
 
-  // Public Key Parameters
-  publicKeyParams: PublicKeyParams;
-
   // Raw data
   pemEncoded: string;
   derEncoded: string; // base64
-  raw: any; // node-forge certificate object
 }
 
 export interface KeyUsage {
@@ -96,17 +104,6 @@ export interface BasicConstraints {
 export interface SubjectAltName {
   type: 'URI' | 'DNS' | 'IP' | 'EMAIL';
   value: string;
-}
-
-export interface PublicKeyParams {
-  algorithm: string;
-  // RSA
-  modulus?: string;
-  exponent?: string;
-  // EC
-  curve?: string;
-  x?: string;
-  y?: string;
 }
 
 // Application State

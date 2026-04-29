@@ -52,7 +52,7 @@ export function LandingPage() {
         <div className="text-center mb-8">
           <Key className="w-24 h-24 mx-auto mb-4 text-primary-600" />
           <h2 className="text-2xl font-semibold mb-2">Welcome to SPIFFE Bundle Explorer</h2>
-          <p className="text-gray-600">Enter a bundle endpoint URL or paste bundle JSON content to get started</p>
+          <p className="text-gray-600">Enter a bundle endpoint URL, or paste a SPIFFE Bundle (JWK Set) or SPIFFE Bundle Map to get started</p>
         </div>
 
         <form onSubmit={handleSubmit} className="bg-white rounded-lg p-6 shadow-sm mb-8">
@@ -60,7 +60,7 @@ export function LandingPage() {
             <textarea
               value={input}
               onChange={handleInputChange}
-              placeholder="Enter SPIFFE bundle endpoint URL or paste bundle JSON content."
+              placeholder="Enter SPIFFE bundle endpoint URL, or paste a SPIFFE Bundle (JWK Set) or SPIFFE Bundle Map JSON."
               className={`w-full px-3 py-2 border-2 rounded-lg transition-colors resize-vertical min-h-[80px] leading-normal font-inherit ${
                 validationError
                   ? 'border-red-500 focus:border-red-600 focus:ring-2 focus:ring-red-200'
